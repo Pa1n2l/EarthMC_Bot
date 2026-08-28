@@ -92,10 +92,15 @@ client.on('interactionCreate', async interaction => {
   }
 });
 
-// 毎日 JST 00:00:00 (UTC 15:00:00) に自動更新
-cron.schedule('0 15 * * *', () => {
+// 毎日 JST 19:00:00 に自動更新
+cron.schedule('0 19 * * *', () => {
     console.log('[Cron] 定時キャッシュ更新を実行します...');
-    buildFallingCache();
+    buildFallingCache().catch(err => {
+        console.error('[Cron] 定時キャッシュ更新エラー:', err);
+    });
+}, {
+    scheduled: true,
+    timezone: "Asia/Tokyo"
 });
 
 client.login(process.env.TOKEN);

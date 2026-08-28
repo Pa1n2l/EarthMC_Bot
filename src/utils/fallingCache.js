@@ -16,6 +16,7 @@ function chunkArray(array, size = 100) {
     return chunks;
 }
 
+// 429エラー時にデータを消失させず、リトライする仕組み
 async function fetchInChunksWithProgress(url, items, label, delayMs = 80) {
     const chunks = chunkArray(items, 100);
     const totalChunks = chunks.length;
@@ -23,13 +24,25 @@ async function fetchInChunksWithProgress(url, items, label, delayMs = 80) {
 
     for (let i = 0; i < totalChunks; i++) {
         const chunk = chunks[i];
-        try {
-            const res = await axios.post(url, { query: chunk }, { timeout: 15000 });
-            if (res.data) results.push(...res.data);
-        } catch (err) {
-            if (err.response?.status === 429) {
-                console.warn(`[API制限] 429検知のため2秒待機... (${url})`);
-                await sleep(2000);
+        let attempts = 0;
+        let success = false;
+
+        while (attempts < 3 && !success) {
+            try {
+                const res = await axios.post(url, { query: chunk }, { timeout: 15000 });
+                if (res.data) {
+                    results.push(...res.data);
+                    success = true;
+                }
+            } catch (err) {
+                attempts++;
+                if (err.response?.status === 429) {
+                    console.warn(`[API制限] 429検知。2秒待機してリトライします... (${attempts}/3)`);
+                    await sleep(2000);
+                } else {
+                    console.error(`[APIエラー] 詳細取得失敗: ${err.message}`);
+                    break;
+                }
             }
         }
 
@@ -41,19 +54,26 @@ async function fetchInChunksWithProgress(url, items, label, delayMs = 80) {
 }
 
 /**
- * 直近の「昨日の 19:00:00 JST」のタイムスタンプ(ms)を算出
- * (JST 19:00 = UTC 10:00)
+ * 【修正版】直近（最新）の 19:00:00 JST のタイムスタンプ(ms)を算出
+ * - 現在時刻が「本日 19:00 以降」 -> 「本日 19:00:00 JST」を返す
+ * - 現在時刻が「本日 19:00 未満」 -> 「昨日 19:00:00 JST」を返す
  */
-function getLastYesterday19PMJST() {
+function getLast19PMJST() {
     const now = new Date();
-    // 昨日の日付を設定
-    const yesterday = new Date(Date.UTC(
-        now.getUTCFullYear(),
-        now.getUTCMonth(),
-        now.getUTCDate() - 1,
-        10, 0, 0, 0 // UTC 10:00 = JST 19:00
-    ));
-    return yesterday.getTime();
+
+    // JST（日本時間）の日付文字列からJST基準のDateオブジェクトを生成
+    const jstStr = now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' });
+    const jstDate = new Date(jstStr);
+
+    // 本日の JST 19:00:00 にセット
+    jstDate.setHours(19, 0, 0, 0);
+
+    // 現在時刻が本日の 19:00 未満の場合は、昨日の 19:00 を有効な境界値とする
+    if (now.getTime() < jstDate.getTime()) {
+        jstDate.setDate(jstDate.getDate() - 1);
+    }
+
+    return jstDate.getTime();
 }
 
 let cachedFallingTowns = [];
@@ -65,9 +85,9 @@ export async function buildFallingCache() {
         const fileData = await fs.readFile(CACHE_FILE_PATH, 'utf-8');
         const json = JSON.parse(fileData);
 
-        const thresholdMs = getLastYesterday19PMJST();
+        const thresholdMs = getLast19PMJST();
 
-        // キャッシュ更新日時が「昨日の19:00 JST」以降であれば再利用
+        // キャッシュ更新日時が「直近の19:00 JST」以降であれば再利用
         if (json.lastUpdated && json.lastUpdated >= thresholdMs) {
             cachedFallingTowns = json.data || [];
             lastUpdated = json.lastUpdated;
@@ -75,7 +95,7 @@ export async function buildFallingCache() {
             console.log(`[FallingCache] 有効なJSONキャッシュを検出しました (${updatedDateStr})。再生成をスキップします。`);
             return cachedFallingTowns;
         }
-        console.log('[FallingCache] 既存のJSONキャッシュが古いため、再生成を行います...');
+        console.log('[FallingCache] 既存のJSONキャッシュが19:00以前の古いデータのため、再生成を行います...');
     } catch (err) {
         console.log('[FallingCache] キャッシュファイルが存在しないか壊れているため、新規作成します...');
     }
@@ -121,14 +141,12 @@ export async function buildFallingCache() {
             const lastOnlineMs = mayorOnlineMap.get(mayorName.toLowerCase());
             if (!lastOnlineMs) continue;
 
-            // 42日後の JST 19:00:00 (= UTC 10:00:00) を計算
-            const lastOnlineDate = new Date(lastOnlineMs);
-            const deletionDate = new Date(Date.UTC(
-                lastOnlineDate.getUTCFullYear(),
-                lastOnlineDate.getUTCMonth(),
-                lastOnlineDate.getUTCDate() + 42,
-                10, 0, 0, 0
-            ));
+            // JSTベースでの安全な42日後（19:00:00）計算
+            const lastOnlineJstStr = new Date(lastOnlineMs).toLocaleString('en-US', { timeZone: 'Asia/Tokyo' });
+            const deletionDate = new Date(lastOnlineJstStr);
+            
+            deletionDate.setDate(deletionDate.getDate() + 42);
+            deletionDate.setHours(19, 0, 0, 0);
 
             let deletionTimeMs = deletionDate.getTime();
             if (deletionTimeMs < lastOnlineMs + (42 * DAY_MS)) {
@@ -161,6 +179,9 @@ export async function buildFallingCache() {
                 registered: t.timestamps?.registered || 0
             });
         }
+
+        // 削除日時が近い順（残り時間が短い順）にソート
+        newCache.sort((a, b) => a.deletionTimeMs - b.deletionTimeMs);
 
         cachedFallingTowns = newCache;
         lastUpdated = Date.now();
