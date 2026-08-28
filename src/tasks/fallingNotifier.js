@@ -4,6 +4,18 @@ import axios from 'axios';
 const TOWNS_API_URL = process.env.TOWNS_API_URL || 'https://api.earthmc.net/v4/towns';
 const PLAYERS_API_URL = process.env.PLAYERS_API_URL || 'https://api.earthmc.net/v4/players';
 
+// NotifyTime の定義と優先順位（ミリ秒換算）
+const NOTIFY_THRESHOLDS = {
+    '7d':  7 * 24 * 60 * 60 * 1000,
+    '3d':  3 * 24 * 60 * 60 * 1000,
+    '1d':  1 * 24 * 60 * 60 * 1000,
+    '12h': 12 * 60 * 60 * 1000,
+    '6h':  6 * 60 * 60 * 1000,
+    '3h':  3 * 60 * 60 * 1000,
+    '1h':  1 * 60 * 60 * 1000,
+    '30m': 30 * 60 * 1000
+};
+
 function chunkArray(array, size) {
     const chunks = [];
     for (let i = 0; i < array.length; i += size) {
@@ -13,7 +25,7 @@ function chunkArray(array, size) {
 }
 
 export function startFallingNotifierTask(client, pool) {
-    // 10分ごとに通知チェック
+    // 10分ごとに通知判定
     cron.schedule('*/10 * * * *', async () => {
         if (!pool) return;
 
@@ -27,7 +39,6 @@ export function startFallingNotifierTask(client, pool) {
             const [townAlerts] = await pool.execute('SELECT * FROM town_fall_alerts');
             if (townAlerts.length === 0) return;
 
-            // アラート対象になっている町名のみ抽出して 50件ずつPOST取得
             const targetTownNames = townAlerts.map(a => a.town_name);
             const townChunks = chunkArray(targetTownNames, 50);
 
@@ -38,7 +49,7 @@ export function startFallingNotifierTask(client, pool) {
             const detailedTowns = townDetailRes.flatMap(res => res.data || []);
             const townMap = new Map(detailedTowns.map(t => [t.name.toLowerCase(), t]));
 
-            // 3. 市長のリストを抽出して 50件ずつPOST取得
+            // 3. 市長のリストを抽出して取得
             const mayorNames = [...new Set(detailedTowns.map(t => t.mayor?.name).filter(Boolean))];
             const mayorChunks = chunkArray(mayorNames, 50);
 
@@ -63,7 +74,7 @@ export function startFallingNotifierTask(client, pool) {
                 const townName = alert.town_name;
                 const townData = townMap.get(townName.toLowerCase());
 
-                // 街がすでに消滅（Fall）している場合はDBから自動削除
+                // 街がすでに消滅している場合はDBから削除
                 if (!townData) {
                     await pool.execute('DELETE FROM town_fall_alerts WHERE town_name = ?', [townName]);
                     continue;
@@ -71,45 +82,71 @@ export function startFallingNotifierTask(client, pool) {
 
                 const mayorName = townData.mayor?.name;
                 const lastOnline = mayorName ? mayorLastOnlineMap.get(mayorName.toLowerCase()) : null;
+                if (!lastOnline) continue;
 
-                let fallPrediction = '不明';
-                if (lastOnline) {
-                    const offlineDays = (NOW - lastOnline) / DAY_IN_MS;
-                    const daysLeft = 42 - offlineDays;
+                const offlineDays = (NOW - lastOnline) / DAY_IN_MS;
+                const daysLeft = 42 - offlineDays;
+                const remainingMs = daysLeft * DAY_IN_MS; // 残り時間 (ミリ秒)
 
-                    if (daysLeft <= 0) {
-                        fallPrediction = '本日中 (崩壊寸前)';
-                    } else if (daysLeft < 1) {
-                        fallPrediction = `${Math.floor(daysLeft * 24)}時間前`;
+                let fallPrediction = '';
+                if (daysLeft <= 0) {
+                    fallPrediction = '本日中 (崩壊寸前)';
+                } else if (daysLeft < 1) {
+                    fallPrediction = `約 ${Math.ceil(daysLeft * 24)} 時間後`;
+                } else {
+                    fallPrediction = `約 ${Math.ceil(daysLeft)} 日後`;
+                }
+
+                let userSettings = typeof alert.user_ids === 'string' ? JSON.parse(alert.user_ids) : alert.user_ids;
+                let updatedSettings = [];
+                let isModified = false;
+
+                for (const setting of userSettings) {
+                    const userId = setting.UserID;
+                    const notifyTime = setting.NotifyTime;
+                    const lastNotified = setting.lastNotified;
+                    const thresholdMs = NOTIFY_THRESHOLDS[notifyTime];
+
+                    // 条件: 残り時間が指定以下 且つ まだその条件で通知を出していない場合
+                    if (thresholdMs && remainingMs <= thresholdMs && lastNotified !== notifyTime) {
+                        try {
+                            const user = await client.users.fetch(userId);
+                            await user.send(
+                                `⚠️ **【町崩壊アラート】**\n` +
+                                `街 **${townData.name}** の崩壊予測が指定のタイマー (**${notifyTime} 前**) に達しました！\n` +
+                                `現在の崩壊予測: **${fallPrediction}**`
+                            );
+
+                            // 通知済みフラグを更新して保持
+                            updatedSettings.push({
+                                ...setting,
+                                lastNotified: notifyTime
+                            });
+                            isModified = true;
+                        } catch (dmError) {
+                            if (dmError.code === 50007) {
+                                // DM拒否設定などの場合は除外（isModifiedをtrueにする）
+                                console.warn(`[FallingNotifier] <@${userId}> がDMを拒否しているため削除します。`);
+                                isModified = true;
+                            } else {
+                                // 一時的なエラーの場合は変更なしで保持
+                                updatedSettings.push(setting);
+                            }
+                        }
                     } else {
-                        fallPrediction = `${Math.floor(daysLeft)}日前`;
+                        // 条件未到達 または 送信済みの場合はそのまま保持
+                        updatedSettings.push(setting);
                     }
                 }
 
-                const alertMessage = `街 ${townData.name} の崩壊予測が ${fallPrediction} です。`;
-
-                let userIds = typeof alert.user_ids === 'string' ? JSON.parse(alert.user_ids) : alert.user_ids;
-                const validUserIds = [];
-
-                // DM送信と不在ユーザーの自動除外
-                for (const userId of userIds) {
-                    try {
-                        const user = await client.users.fetch(userId);
-                        await user.send(alertMessage);
-                        validUserIds.push(userId);
-                    } catch (dmError) {
-                        console.warn(`[FallingNotifier] <@${userId}> への送信失敗（不在/DM拒否）。リストから除外します。`);
-                    }
-                }
-
-                // 送信結果をDBへ反映
-                if (validUserIds.length !== userIds.length) {
-                    if (validUserIds.length === 0) {
+                // 設定の更新・削除があった場合のみDBに保存
+                if (isModified) {
+                    if (updatedSettings.length === 0) {
                         await pool.execute('DELETE FROM town_fall_alerts WHERE town_name = ?', [townName]);
                     } else {
                         await pool.execute(
                             'UPDATE town_fall_alerts SET user_ids = ? WHERE town_name = ?',
-                            [JSON.stringify(validUserIds), townName]
+                            [JSON.stringify(updatedSettings), townName]
                         );
                     }
                 }

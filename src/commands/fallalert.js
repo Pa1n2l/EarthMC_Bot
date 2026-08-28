@@ -10,15 +10,46 @@ export const data = new SlashCommandBuilder()
     .addStringOption(opt => opt.setName('nation').setDescription('対象の国名'))
     .addStringOption(opt => 
         opt.setName('alertday')
-           .setDescription('通知を開始するタイミング (デフォルト: 7day)')
+           .setDescription('通知を受け取るタイミング (デフォルト: 7day)')
            .addChoices(
-               { name: '7日前から', value: '7day' },
-               { name: '3日前から', value: '3day' },
-               { name: '1日前から', value: '1day' },
-               { name: '12時間前から', value: '12h' },
-               { name: '6時間前から', value: '6h' },
-               { name: '1時間前から', value: '1h' }
+               { name: '7日前', value: '7day' },
+               { name: '3日前', value: '3day' },
+               { name: '1日前', value: '1day' },
+               { name: '12時間前', value: '12h' },
+               { name: '6時間前', value: '6h' },
+               { name: '1時間前', value: '1h' },
+               { name: '30分前', value: '30m' }
            ));
+
+/**
+ * ユーザー設定の配列（JSON）に新しい設定を追加・更新するヘルパー関数
+ */
+function updateUserArray(rawUsers, userId, alertDay) {
+    let users = [];
+    if (rawUsers) {
+        users = typeof rawUsers === 'string' ? JSON.parse(rawUsers) : rawUsers;
+    }
+
+    const index = users.findIndex(u => u.UserID === userId);
+    if (index !== -1) {
+        // 設定済みの場合は通知タイミングを更新（タイミングが変わった場合は lastNotified をリセット）
+        const oldNotifyTime = users[index].NotifyTime;
+        users[index] = {
+            UserID: userId,
+            NotifyTime: alertDay,
+            lastNotified: oldNotifyTime === alertDay ? users[index].lastNotified : null
+        };
+    } else {
+        // 新規追加
+        users.push({
+            UserID: userId,
+            NotifyTime: alertDay,
+            lastNotified: null
+        });
+    }
+
+    return users;
+}
 
 export async function execute(interaction, args, context = {}) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -50,24 +81,22 @@ export async function execute(interaction, args, context = {}) {
         // 町のアラート登録
         if (targetTown) {
             const [rows] = await pool.execute('SELECT user_ids FROM town_fall_alerts WHERE town_name = ?', [targetTown]);
-            let users = rows.length > 0 ? (typeof rows[0].user_ids === 'string' ? JSON.parse(rows[0].user_ids) : rows[0].user_ids) : [];
-            if (!users.includes(userId)) users.push(userId);
+            const updatedUsers = updateUserArray(rows.length > 0 ? rows[0].user_ids : null, userId, alertday);
 
             await pool.execute(
-                'INSERT INTO town_fall_alerts (town_name, alert_day, user_ids) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE alert_day = ?, user_ids = ?',
-                [targetTown, alertday, JSON.stringify(users), alertday, JSON.stringify(users)]
+                'INSERT INTO town_fall_alerts (town_name, user_ids) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_ids = ?',
+                [targetTown, JSON.stringify(updatedUsers), JSON.stringify(updatedUsers)]
             );
         }
 
         // 国のアラート登録
         if (nation) {
             const [rows] = await pool.execute('SELECT user_ids FROM nation_fall_alerts WHERE nation_name = ?', [nation]);
-            let users = rows.length > 0 ? (typeof rows[0].user_ids === 'string' ? JSON.parse(rows[0].user_ids) : rows[0].user_ids) : [];
-            if (!users.includes(userId)) users.push(userId);
+            const updatedUsers = updateUserArray(rows.length > 0 ? rows[0].user_ids : null, userId, alertday);
 
             await pool.execute(
-                'INSERT INTO nation_fall_alerts (nation_name, alert_day, user_ids) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE alert_day = ?, user_ids = ?',
-                [nation, alertday, JSON.stringify(users), alertday, JSON.stringify(users)]
+                'INSERT INTO nation_fall_alerts (nation_name, user_ids) VALUES (?, ?) ON DUPLICATE KEY UPDATE user_ids = ?',
+                [nation, JSON.stringify(updatedUsers), JSON.stringify(updatedUsers)]
             );
         }
 

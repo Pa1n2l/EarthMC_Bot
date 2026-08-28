@@ -19,38 +19,55 @@ export async function execute(interaction, args, context = {}) {
 
     try {
         const pool = context.pool;
+        let removedCount = 0;
 
         // 町のアラート解除
         if (town) {
             const [rows] = await pool.execute('SELECT user_ids FROM town_fall_alerts WHERE town_name = ?', [town]);
             if (rows.length > 0) {
                 let users = typeof rows[0].user_ids === 'string' ? JSON.parse(rows[0].user_ids) : rows[0].user_ids;
-                users = users.filter(id => id !== userId);
+                const initialLen = users.length;
 
-                if (users.length === 0) {
-                    await pool.execute('DELETE FROM town_fall_alerts WHERE town_name = ?', [town]);
-                } else {
-                    await pool.execute('UPDATE town_fall_alerts SET user_ids = ? WHERE town_name = ?', [JSON.stringify(users), town]);
+                // オブジェクト配列から該当ユーザーを除外
+                users = users.filter(u => u.UserID !== userId);
+
+                if (users.length !== initialLen) {
+                    removedCount++;
+                    if (users.length === 0) {
+                        await pool.execute('DELETE FROM town_fall_alerts WHERE town_name = ?', [town]);
+                    } else {
+                        await pool.execute('UPDATE town_fall_alerts SET user_ids = ? WHERE town_name = ?', [JSON.stringify(users), town]);
+                    }
                 }
             }
         }
 
-        // 国のアラート解除（町指定が同時にあった場合は国側は維持）
-        if (nation && !town) {
+        // 国のアラート解除
+        if (nation) {
             const [rows] = await pool.execute('SELECT user_ids FROM nation_fall_alerts WHERE nation_name = ?', [nation]);
             if (rows.length > 0) {
                 let users = typeof rows[0].user_ids === 'string' ? JSON.parse(rows[0].user_ids) : rows[0].user_ids;
-                users = users.filter(id => id !== userId);
+                const initialLen = users.length;
 
-                if (users.length === 0) {
-                    await pool.execute('DELETE FROM nation_fall_alerts WHERE nation_name = ?', [nation]);
-                } else {
-                    await pool.execute('UPDATE nation_fall_alerts SET user_ids = ? WHERE nation_name = ?', [JSON.stringify(users), nation]);
+                // オブジェクト配列から該当ユーザーを除外
+                users = users.filter(u => u.UserID !== userId);
+
+                if (users.length !== initialLen) {
+                    removedCount++;
+                    if (users.length === 0) {
+                        await pool.execute('DELETE FROM nation_fall_alerts WHERE nation_name = ?', [nation]);
+                    } else {
+                        await pool.execute('UPDATE nation_fall_alerts SET user_ids = ? WHERE nation_name = ?', [JSON.stringify(users), nation]);
+                    }
                 }
             }
         }
 
-        await interaction.editReply('✅ アラート解除処理が完了しました。');
+        if (removedCount > 0) {
+            await interaction.editReply('✅ アラート設定の解除が完了しました。');
+        } else {
+            await interaction.editReply('⚠️ 指定された町または国の通知設定が見つかりませんでした。');
+        }
 
     } catch (error) {
         console.error('[/removefallalert] エラー:', error);

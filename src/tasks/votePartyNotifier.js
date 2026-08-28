@@ -1,10 +1,11 @@
+import 'dotenv/config';
 import { fetchServerInfo } from '../api.js';
-import mysql from 'mysql2/promise';
 
 let hasNotified = false;
 const VOTE_PARTY_FLAG = 1 << 0; // 1
 
-export function startVotePartyTask(client, dbConfig, intervalMs = 180000) {
+// 第2引数を pool に変更
+export function startVotePartyTask(client, pool, intervalMs = 60000) {
     setInterval(async () => {
         try {
             const info = await fetchServerInfo();
@@ -12,26 +13,16 @@ export function startVotePartyTask(client, dbConfig, intervalMs = 180000) {
             if (!vp) return;
 
             const remaining = vp.numRemaining ?? 0;
-            const threshold = 100;
+            const threshold = Number(process.env.VPNOTHIFY_THRESHOLD) || 100;
 
             if (remaining <= threshold && !hasNotified) {
                 hasNotified = true;
 
-                const conn = await mysql.createConnection({
-                    host: dbConfig.host,
-                    port: dbConfig.port,
-                    user: dbConfig.user,
-                    password: dbConfig.password,
-                    database: dbConfig.database,
-                    ssl: { rejectUnauthorized: false }
-                });
-
-                // ビット演算で VoteParty 通知が ON のユーザーのみ抽出
-                const [rows] = await conn.execute(
+                // 既存のプール(pool)からクエリを直接実行
+                const [rows] = await pool.execute(
                     'SELECT discord_id FROM users WHERE discord_id IS NOT NULL AND (flags & ?) != 0',
                     [VOTE_PARTY_FLAG]
                 );
-                await conn.end();
 
                 for (const row of rows) {
                     const user = await client.users.fetch(row.discord_id).catch(() => null);
@@ -45,6 +36,7 @@ export function startVotePartyTask(client, dbConfig, intervalMs = 180000) {
                 }
             } 
             else if (remaining > threshold && hasNotified) {
+                // VotePartyがリセット（達成後）されたらフラグを戻す
                 hasNotified = false;
             }
         } catch (error) {
