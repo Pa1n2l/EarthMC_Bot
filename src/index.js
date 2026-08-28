@@ -5,6 +5,7 @@ import { loadAllCommands, commands } from './commandHandler.js';
 import { startVotePartyTask } from './tasks/votePartyNotifier.js'; 
 import { startWatcherTask } from './tasks/watcher.js'; 
 import { buildFallingCache } from './utils/fallingCache.js';
+import { startFallingNotifierTask } from './tasks/fallingNotifier.js';
 import { createPool } from './db.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -43,6 +44,7 @@ client.once('ready', async () => {
   // 各タスクの起動 (pool を渡す)
   startVotePartyTask(client, pool);
   startWatcherTask(pool);
+  startFallingNotifierTask(client, pool);
 });
 
 client.on('interactionCreate', async interaction => {

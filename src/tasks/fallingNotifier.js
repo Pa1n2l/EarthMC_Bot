@@ -4,16 +4,14 @@ import axios from 'axios';
 const TOWNS_API_URL = process.env.TOWNS_API_URL || 'https://api.earthmc.net/v4/towns';
 const PLAYERS_API_URL = process.env.PLAYERS_API_URL || 'https://api.earthmc.net/v4/players';
 
-// NotifyTime の定義と優先順位（ミリ秒換算）
 const NOTIFY_THRESHOLDS = {
-    '7d':  7 * 24 * 60 * 60 * 1000,
-    '3d':  3 * 24 * 60 * 60 * 1000,
-    '1d':  1 * 24 * 60 * 60 * 1000,
-    '12h': 12 * 60 * 60 * 1000,
-    '6h':  6 * 60 * 60 * 1000,
-    '3h':  3 * 60 * 60 * 1000,
-    '1h':  1 * 60 * 60 * 1000,
-    '30m': 30 * 60 * 1000
+    '7day': 7 * 24 * 60 * 60 * 1000,
+    '3day': 3 * 24 * 60 * 60 * 1000,
+    '1day': 1 * 24 * 60 * 60 * 1000,
+    '12h':  12 * 60 * 60 * 1000,
+    '6h':   6 * 60 * 60 * 1000,
+    '1h':   1 * 60 * 60 * 1000,
+    '30m':  30 * 60 * 1000
 };
 
 function chunkArray(array, size) {
@@ -26,7 +24,7 @@ function chunkArray(array, size) {
 
 export function startFallingNotifierTask(client, pool) {
     // 10分ごとに通知判定
-    cron.schedule('*/10 * * * *', async () => {
+    const checkFalling = async () => {
         if (!pool) return;
 
         try {
@@ -155,5 +153,11 @@ export function startFallingNotifierTask(client, pool) {
         } catch (error) {
             console.error('[FallingNotifier] タスク実行エラー:', error.message);
         }
-    });
+    };
+    console.log("[FallingNotifier] 起動しました");
+    // 1. Bot起動時に即座に1回実行（バックグラウンド実行）
+    checkFalling().catch(err => console.error('[FallingNotifier] 起動時エラー:', err));
+
+    // 2. その後は10分ごとに定期実行
+    cron.schedule('*/10 * * * *', checkFalling);
 }
