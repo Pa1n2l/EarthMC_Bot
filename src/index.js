@@ -2,10 +2,11 @@ import cron from 'node-cron';
 import { Client, GatewayIntentBits, REST, Routes, MessageFlags } from 'discord.js';
 import 'dotenv/config';
 import { loadAllCommands, commands } from './commandHandler.js';
+import { startFallingNotifierTask } from './tasks/fallingNotifier.js';
 import { startVotePartyTask } from './tasks/votePartyNotifier.js'; 
 import { startWatcherTask } from './tasks/watcher.js'; 
 import { buildFallingCache } from './utils/fallingCache.js';
-import { startFallingNotifierTask } from './tasks/fallingNotifier.js';
+import { startPursuitCacheTask } from './utils/pursuitCache.js';
 import { createPool } from './db.js';
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -45,6 +46,7 @@ client.once('ready', async () => {
   startVotePartyTask(client, pool);
   startWatcherTask(pool);
   startFallingNotifierTask(client, pool);
+  startPursuitCacheTask()
 });
 
 client.on('interactionCreate', async interaction => {

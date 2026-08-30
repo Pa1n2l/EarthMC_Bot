@@ -4,7 +4,9 @@ import path from 'path';
 
 const TOWNS_API_URL = process.env.TOWNS_API_URL || 'https://api.earthmc.net/v4/towns';
 const PLAYERS_API_URL = process.env.PLAYERS_API_URL || 'https://api.earthmc.net/v4/players';
-const CACHE_FILE_PATH = path.resolve(process.cwd(), 'falling_cache.json');
+
+// 保存先を data ディレクトリ内に指定
+const CACHE_FILE_PATH = path.resolve(process.cwd(), 'data/falling_cache.json');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -37,10 +39,10 @@ async function fetchInChunksWithProgress(url, items, label, delayMs = 80) {
             } catch (err) {
                 attempts++;
                 if (err.response?.status === 429) {
-                    console.warn(`[API制限] 429検知。2秒待機してリトライします... (${attempts}/3)`);
+                    console.warn(`[FallingCache] 429: 2秒待機してリトライします... (${attempts}/3)`);
                     await sleep(2000);
                 } else {
-                    console.error(`[APIエラー] 詳細取得失敗: ${err.message}`);
+                    console.error(`[FallingCache] 詳細取得失敗: ${err.message}`);
                     break;
                 }
             }
@@ -54,21 +56,16 @@ async function fetchInChunksWithProgress(url, items, label, delayMs = 80) {
 }
 
 /**
- * 【修正版】直近（最新）の 19:00:00 JST のタイムスタンプ(ms)を算出
- * - 現在時刻が「本日 19:00 以降」 -> 「本日 19:00:00 JST」を返す
- * - 現在時刻が「本日 19:00 未満」 -> 「昨日 19:00:00 JST」を返す
+ * 直近（最新）の 19:00:00 JST のタイムスタンプ(ms)を算出
  */
 function getLast19PMJST() {
     const now = new Date();
 
-    // JST（日本時間）の日付文字列からJST基準のDateオブジェクトを生成
     const jstStr = now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo' });
     const jstDate = new Date(jstStr);
 
-    // 本日の JST 19:00:00 にセット
     jstDate.setHours(19, 0, 0, 0);
 
-    // 現在時刻が本日の 19:00 未満の場合は、昨日の 19:00 を有効な境界値とする
     if (now.getTime() < jstDate.getTime()) {
         jstDate.setDate(jstDate.getDate() - 1);
     }
@@ -87,15 +84,14 @@ export async function buildFallingCache() {
 
         const thresholdMs = getLast19PMJST();
 
-        // キャッシュ更新日時が「直近の19:00 JST」以降であれば再利用
         if (json.lastUpdated && json.lastUpdated >= thresholdMs) {
             cachedFallingTowns = json.data || [];
             lastUpdated = json.lastUpdated;
             const updatedDateStr = new Date(lastUpdated).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
-            console.log(`[FallingCache] 有効なJSONキャッシュを検出しました (${updatedDateStr})。再生成をスキップします。`);
+            console.log(`[FallingCache] 有効なキャッシュを検出しました。 (${updatedDateStr})。再生成をスキップします。`);
             return cachedFallingTowns;
         }
-        console.log('[FallingCache] 既存のJSONキャッシュが19:00以前の古いデータのため、再生成を行います...');
+        console.log('[FallingCache] 既存のキャッシュが古いデータのため、再生成を行います...');
     } catch (err) {
         console.log('[FallingCache] キャッシュファイルが存在しないか壊れているため、新規作成します...');
     }
@@ -141,7 +137,6 @@ export async function buildFallingCache() {
             const lastOnlineMs = mayorOnlineMap.get(mayorName.toLowerCase());
             if (!lastOnlineMs) continue;
 
-            // JSTベースでの安全な42日後（19:00:00）計算
             const lastOnlineJstStr = new Date(lastOnlineMs).toLocaleString('en-US', { timeZone: 'Asia/Tokyo' });
             const deletionDate = new Date(lastOnlineJstStr);
             
@@ -180,20 +175,22 @@ export async function buildFallingCache() {
             });
         }
 
-        // 削除日時が近い順（残り時間が短い順）にソート
         newCache.sort((a, b) => a.deletionTimeMs - b.deletionTimeMs);
 
         cachedFallingTowns = newCache;
         lastUpdated = Date.now();
 
-        // 3. JSONファイルへ書き出し
+        // 3. JSONファイルへ書き出し (data/ ディレクトリの存在確認と自動作成)
+        const dirPath = path.dirname(CACHE_FILE_PATH);
+        await fs.mkdir(dirPath, { recursive: true });
+
         const payload = {
             lastUpdated: lastUpdated,
             data: cachedFallingTowns
         };
         await fs.writeFile(CACHE_FILE_PATH, JSON.stringify(payload, null, 2), 'utf-8');
 
-        console.log(`[FallingCache] 100% : キャッシュ更新＆JSON保存完了！ (該当町数: ${newCache.length}件)`);
+        console.log(`[FallingCache] 100% : 完了しました。 (該当町数: ${newCache.length}件)`);
         return cachedFallingTowns;
 
     } catch (error) {

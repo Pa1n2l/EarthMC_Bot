@@ -45,6 +45,8 @@ DB_PORT=3306
 DB_USER=root
 DB_PASS=password1234
 DB_NAME=default
+
+SSE_TOKEN=YOUR_EARTHMC_API_TOKEN # /pursuitsに必要です
 ```
 
 ### 3. Botの起動
